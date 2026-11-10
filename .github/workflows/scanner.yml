@@ -2,7 +2,7 @@ name: Pionex 4H Crypto Scanner V2.0
 
 on:
   schedule:
-    - cron: "17,47 * * * *"
+    - cron: "0,30 * * * *"
   workflow_dispatch:
 
 permissions:
