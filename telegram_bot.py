@@ -14,11 +14,13 @@ class TelegramBot:
         self.base_url = f"https://api.telegram.org/bot{token}"
 
     def send_message(self, text: str) -> None:
+        """Send a Telegram HTML-formatted message."""
         response = requests.post(
             f"{self.base_url}/sendMessage",
             json={
                 "chat_id": self.chat_id,
                 "text": text,
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             },
             timeout=20,
@@ -71,14 +73,14 @@ class TelegramBot:
 
             if incoming_chat_id == self.chat_id and text.upper() == "TEST":
                 self.send_message(
-                    "🧪 PIONEX CRYPTO SCANNER｜TEST 測試通知\\n"
-                    "━━━━━━━━━━━━━━━━━━\\n"
-                    "✅ Telegram 訊息發送成功！\\n"
-                    "✅ Bot 指令接收成功！\\n"
-                    "✅ GitHub Actions 與 Telegram 通訊正常。\\n"
-                    "━━━━━━━━━━━━━━━━━━\\n"
-                    "這是一則測試訊息，不是交易訊號。\\n"
-                    "不會觸發任何下單。"
+                    "🧪 <b>PIONEX CRYPTO SCANNER</b>\n"
+                    "<code>V2.0 · SYSTEM TEST</code>\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "🟢 <b>Telegram 訊息發送</b>　正常\n"
+                    "🟢 <b>Bot 指令接收</b>　正常\n"
+                    "🟢 <b>GitHub Actions 通訊</b>　正常\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "<i>這是系統測試訊息，不是交易訊號，也不會觸發下單。</i>"
                 )
                 handled += 1
                 log.info("已回覆 Telegram TEST 指令")

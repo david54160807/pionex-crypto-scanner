@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 import os
 import sys
 import time
@@ -24,34 +25,78 @@ def fmt_price(value: float) -> str:
 
 
 def format_signal(item: dict) -> str:
+    symbol = escape(item["symbol"].replace("_", "/"))
     lines = [
-        "🟢 PIONEX 4H 型態掃描｜策略符合",
-        f"幣種：{item['symbol'].replace('_', '/')}",
-        "判斷：四項策略條件全部符合",
+        "🟢 <b>PIONEX CRYPTO SCANNER</b>",
+        "<code>4H TRADING SIGNAL · USDT PERPETUAL</code>",
+        "━━━━━━━━━━━━━━━━━━",
+        f"🚀 <b>{symbol}</b>",
+        "<b>策略狀態</b>　<code>ALL CONDITIONS PASSED</code>",
         "",
-        "【三個波段高點】",
+        "📈 <b>SWING HIGH｜三個波段高點</b>",
     ]
     for idx, point in enumerate(item["highs"], 1):
         lines.append(
-            f"H{idx} {fmt_price(point['price'])}"
-            f"｜成交量 {point['volume']:,.4f}"
-            f"｜RSI {point['rsi']:.2f}"
-            f"｜{point['time_local']}"
+            f"<b>H{idx}</b>　<code>{fmt_price(point['price'])}</code>\n"
+            f"　　成交量 <code>{point['volume']:,.4f}</code>"
+            f"　｜ RSI <code>{point['rsi']:.2f}</code>\n"
+            f"　　<i>{point['time_local']}（台灣）</i>"
         )
 
-    lines.extend(["", "【三個波段低點】"])
+    lines.extend(["", "📉 <b>SWING LOW｜三個波段低點</b>"])
     for idx, point in enumerate(item["lows"], 1):
-        lines.append(f"L{idx} {fmt_price(point['price'])}｜{point['time_local']}")
+        lines.append(
+            f"<b>L{idx}</b>　<code>{fmt_price(point['price'])}</code>"
+            f"　｜ <i>{point['time_local']}（台灣）</i>"
+        )
 
     lines.extend([
+        "━━━━━━━━━━━━━━━━━━",
+        "📍 <b>最新市場數據</b>",
+        f"最新已收盤價　<code>{fmt_price(item['last_close'])}</code>",
+        f"最新 RSI(14)　 <code>{item['last_rsi']:.2f}</code>",
+        f"🕒 掃描時間　<i>{datetime.now(TAIPEI).strftime('%Y-%m-%d %H:%M:%S')} 台灣時間</i>",
         "",
-        f"最新已收盤價：{fmt_price(item['last_close'])}",
-        f"最新 RSI(14)：{item['last_rsi']:.2f}",
-        f"掃描時間：{datetime.now(TAIPEI).strftime('%Y-%m-%d %H:%M:%S')} 台灣時間",
-        "",
-        "⚠️ 此為型態篩選通知，不代表買進、做多或做空建議。",
+        "⚠️ <i>此為技術型態篩選通知，不構成買賣建議。</i>",
+        "<code>PIONEX SCANNER · V2.0</code>",
     ])
     return "\n".join(lines)
+
+
+def format_scan_summary(
+    market_count: int,
+    scanned: int,
+    found_count: int,
+    sent_count: int,
+    send_errors: int,
+    scan_errors: int,
+) -> str:
+    now_text = datetime.now(TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
+    scan_status = "🟢 正常完成" if scan_errors == 0 else "🟡 完成，部分合約有錯誤"
+    notify_status = "🟢 正常" if send_errors == 0 else "🔴 有發送失敗"
+    return "\n".join([
+        "🔎 <b>PIONEX CRYPTO SCANNER</b>",
+        "<code>4H MARKET SCAN · USDT PERPETUAL</code>",
+        "━━━━━━━━━━━━━━━━━━",
+        f"🟢 <b>全市場掃描完成</b>　<code>{now_text} 台灣時間</code>",
+        "",
+        "📊 <b>市場掃描統計</b>",
+        f"├ 掃描合約　　<code>{market_count:,}</code>",
+        f"├ 成功取得 K 線　<code>{scanned:,}</code>",
+        f"├ 符合策略　　<code>{found_count:,}</code>",
+        f"└ 掃描錯誤　　<code>{scan_errors:,}</code>",
+        "",
+        "📨 <b>Telegram 通知統計</b>",
+        f"├ 通知成功　　<code>{sent_count:,}</code>",
+        f"└ 通知失敗　　<code>{send_errors:,}</code>",
+        "",
+        "🛠 <b>系統狀態</b>",
+        f"├ 掃描狀態　{scan_status}",
+        f"└ 通知狀態　{notify_status}",
+        "━━━━━━━━━━━━━━━━━━",
+        "<i>本工具僅進行型態篩選與訊息通知，不會自動下單。</i>",
+        "<code>PIONEX SCANNER · V2.0</code>",
+    ])
 
 
 def main() -> int:
@@ -130,16 +175,17 @@ def main() -> int:
     if not found:
         log.info("本輪沒有符合策略的幣種")
 
-    if os.getenv("SEND_SCAN_SUMMARY", "false").lower() == "true":
+    if os.getenv("SEND_SCAN_SUMMARY", "true").lower() == "true":
         try:
             bot.send_message(
-                "🔎 Pionex 4H 全市場掃描完成\n"
-                f"掃描合約：{len(symbols)}\n"
-                f"成功取得K線：{scanned}\n"
-                f"符合策略：{len(found)}\n"
-                f"通知成功：{sent_count}\n"
-                f"通知失敗：{send_errors}\n"
-                f"掃描錯誤：{errors}"
+                format_scan_summary(
+                    market_count=len(symbols),
+                    scanned=scanned,
+                    found_count=len(found),
+                    sent_count=sent_count,
+                    send_errors=send_errors,
+                    scan_errors=errors,
+                )
             )
         except Exception:
             send_errors += 1
