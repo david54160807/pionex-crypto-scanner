@@ -1,108 +1,162 @@
 from __future__ import annotations
-import json, logging, os, sys, time
-from datetime import datetime, timezone
-from pathlib import Path
+
+import logging
+import os
+import sys
+import time
+from datetime import datetime
 from zoneinfo import ZoneInfo
+
 from pionex_api import PionexClient, RateLimitError
 from strategy import analyze_symbol
 from telegram_bot import TelegramBot
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(),
-                    format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 log = logging.getLogger("scanner")
-STATE_PATH = Path("state.json")
 TAIPEI = ZoneInfo("Asia/Taipei")
 
-def load_state():
-    if not STATE_PATH.exists():
-        return {"sent": {}}
-    try:
-        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {"sent": {}}
-    except Exception:
-        log.exception("state.json 無法讀取，使用空狀態")
-        return {"sent": {}}
 
-def save_state(state):
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+def fmt_price(value: float) -> str:
+    return f"{value:,.10f}".rstrip("0").rstrip(".")
 
-def fmt_price(value):
-    return f"{value:,.8f}".rstrip("0").rstrip(".")
 
-def format_signal(item):
-    lines = ["🟢 PIONEX 4H 型態掃描｜新訊號",
-             f"幣種：{item['symbol'].replace('_', '/')}",
-             "判斷：四項策略條件全部符合", "", "【三個波段高點】"]
-    for idx, p in enumerate(item["highs"], 1):
-        lines.append(f"H{idx} {fmt_price(p['price'])}｜量 {p['volume']:,.4f}｜RSI {p['rsi']:.2f}｜{p['time_local']}")
-    lines += ["", "【三個波段低點】"]
-    for idx, p in enumerate(item["lows"], 1):
-        lines.append(f"L{idx} {fmt_price(p['price'])}｜{p['time_local']}")
-    lines += ["", f"最新收盤：{fmt_price(item['last_close'])}",
-              f"最新 RSI(14)：{item['last_rsi']:.2f}",
-              f"掃描時間：{datetime.now(TAIPEI).strftime('%Y-%m-%d %H:%M:%S')} 台灣時間",
-              "", "⚠️ 型態篩選訊號，不代表買進/做多建議。"]
+def format_signal(item: dict) -> str:
+    lines = [
+        "🟢 PIONEX 4H 型態掃描｜策略符合",
+        f"幣種：{item['symbol'].replace('_', '/')}",
+        "判斷：四項策略條件全部符合",
+        "",
+        "【三個波段高點】",
+    ]
+
+    for idx, point in enumerate(item["highs"], 1):
+        lines.append(
+            f"H{idx} {fmt_price(point['price'])}"
+            f"｜成交量 {point['volume']:,.4f}"
+            f"｜RSI {point['rsi']:.2f}"
+            f"｜{point['time_local']}"
+        )
+
+    lines.extend(["", "【三個波段低點】"])
+
+    for idx, point in enumerate(item["lows"], 1):
+        lines.append(
+            f"L{idx} {fmt_price(point['price'])}"
+            f"｜{point['time_local']}"
+        )
+
+    lines.extend([
+        "",
+        f"最新已收盤價：{fmt_price(item['last_close'])}",
+        f"最新 RSI(14)：{item['last_rsi']:.2f}",
+        f"掃描時間：{datetime.now(TAIPEI).strftime('%Y-%m-%d %H:%M:%S')} 台灣時間",
+        "",
+        "⚠️ 此為型態篩選通知，不代表買進、做多或做空建議。",
+    ])
     return "\n".join(lines)
 
-def main():
+
+def main() -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
     if not token or not chat_id:
-        log.error("缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID Secrets")
+        log.error("缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID GitHub Secrets")
         return 2
-    client, bot = PionexClient(), TelegramBot(token, chat_id)
+
+    client = PionexClient()
+    bot = TelegramBot(token, chat_id)
+
     try:
         symbols = client.get_trading_perpetual_symbols()
     except Exception:
-        log.exception("取得 Pionex 永續合約清單失敗")
+        log.exception("取得 Pionex USDT 永續合約清單失敗")
         return 1
+
     if not symbols:
-        log.error("Pionex 回傳的可交易永續合約清單為空")
+        log.error("Pionex 回傳的可交易 USDT 永續合約清單為空")
         return 1
 
     log.info("開始掃描 %d 個 USDT 永續合約", len(symbols))
-    state = load_state()
-    sent = state.setdefault("sent", {})
-    now_ms = int(time.time() * 1000)
-    found, errors, scanned = [], 0, 0
 
-    # 單線程逐一請求；K線 API Weight=5，請求間隔 1.15 秒。
-    # 若冷卻後仍持續 429，立即停止，避免延長 IP 限流。
+    now_ms = int(time.time() * 1000)
+    found: list[dict] = []
+    errors = 0
+    scanned = 0
+
+    # 單線程逐一請求，沿用先前已驗證的限流保護。
     for symbol in symbols:
         try:
             klines = client.get_4h_klines(symbol)
             scanned += 1
+
             result = analyze_symbol(symbol, klines, now_ms=now_ms)
-            if result:
+            if result is not None:
                 found.append(result)
+
             if scanned % 25 == 0:
-                log.info("掃描進度：%d/%d，符合 %d", scanned, len(symbols), len(found))
+                log.info(
+                    "掃描進度：%d/%d，符合策略：%d",
+                    scanned, len(symbols), len(found)
+                )
+
         except RateLimitError:
-            log.exception("Pionex 持續限流，停止本輪掃描；請稍後再執行")
+            log.exception("Pionex 持續 HTTP 429，停止本輪掃描")
             return 1
         except Exception as exc:
             errors += 1
             log.warning("%s 掃描失敗：%s", symbol, exc)
 
-    found.sort(key=lambda x: x["symbol"])
-    new_signals = [x for x in found if sent.get(x["symbol"]) != x["signal_key"]]
-    log.info("掃描完成：市場 %d、成功取得K線 %d、符合 %d、新訊號 %d、錯誤 %d",
-             len(symbols), scanned, len(found), len(new_signals), errors)
+    found.sort(key=lambda item: item["symbol"])
 
-    if new_signals:
-        for item in new_signals:
+    log.info(
+        "掃描完成：市場 %d、成功取得K線 %d、符合 %d、錯誤 %d",
+        len(symbols), scanned, len(found), errors
+    )
+
+    # V2.0：完全不做去重。每次掃描符合條件的幣種都重新通知。
+    sent_count = 0
+    send_errors = 0
+
+    for item in found:
+        try:
             bot.send_message(format_signal(item))
-            sent[item["symbol"]] = item["signal_key"]
-            time.sleep(0.15)
-        save_state(state)
-    else:
-        log.info("沒有新訊號，不發送重複通知")
+            sent_count += 1
+            log.info("Telegram 通知成功：%s", item["symbol"])
+            time.sleep(0.2)
+        except Exception:
+            send_errors += 1
+            log.exception("Telegram 通知失敗：%s", item["symbol"])
+
+    if not found:
+        log.info("本輪沒有符合策略的幣種")
 
     if os.getenv("SEND_SCAN_SUMMARY", "false").lower() == "true":
-        bot.send_message("🔎 Pionex 4H 全市場掃描完成\n"
-                         f"掃描合約：{len(symbols)}\n成功取得K線：{scanned}\n"
-                         f"目前符合：{len(found)}\n新訊號：{len(new_signals)}\n錯誤：{errors}")
-    return 0
+        summary = (
+            "🔎 Pionex 4H 全市場掃描完成\n"
+            f"掃描合約：{len(symbols)}\n"
+            f"成功取得K線：{scanned}\n"
+            f"符合策略：{len(found)}\n"
+            f"通知成功：{sent_count}\n"
+            f"通知失敗：{send_errors}\n"
+            f"掃描錯誤：{errors}"
+        )
+        try:
+            bot.send_message(summary)
+        except Exception:
+            send_errors += 1
+            log.exception("Telegram 掃描統計通知失敗")
+
+    log.info(
+        "本輪結束：符合 %d 個，通知成功 %d 個，通知失敗 %d 個",
+        len(found), sent_count, send_errors
+    )
+
+    return 1 if send_errors else 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

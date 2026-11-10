@@ -7,11 +7,11 @@ class TelegramBot:
     def __init__(self, token: str, chat_id: str) -> None:
         self.token = token
         self.chat_id = chat_id
-        self.base = f"https://api.telegram.org/bot{token}"
+        self.base_url = f"https://api.telegram.org/bot{token}"
 
     def send_message(self, text: str) -> None:
         response = requests.post(
-            f"{self.base}/sendMessage",
+            f"{self.base_url}/sendMessage",
             json={
                 "chat_id": self.chat_id,
                 "text": text,
@@ -20,6 +20,9 @@ class TelegramBot:
             timeout=20,
         )
         response.raise_for_status()
-        data = response.json()
-        if not data.get("ok"):
-            raise RuntimeError(f"Telegram API 發送失敗：{data}")
+
+        payload = response.json()
+        if not payload.get("ok"):
+            raise RuntimeError(
+                f"Telegram API 發送失敗：{payload}"
+            )

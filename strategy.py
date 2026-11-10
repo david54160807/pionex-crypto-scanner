@@ -5,165 +5,230 @@ from zoneinfo import ZoneInfo
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 
-LOOKBACK_BARS = 186       # 31 天 × 每天 6 根 4H K 線
+LOOKBACK_DAYS = 31
+LOOKBACK_MS = LOOKBACK_DAYS * 24 * 60 * 60 * 1000
+LOOKBACK_BARS = 186
 PIVOT_LEFT = 3
 PIVOT_RIGHT = 3
 RSI_PERIOD = 14
 CANDLE_MS = 4 * 60 * 60 * 1000
 
 
-def wilder_rsi(closes: list[float], period: int = RSI_PERIOD) -> list[float | None]:
-    """Wilder RSI；以第一組 period 漲跌幅作初始平均。"""
-    out: list[float | None] = [None] * len(closes)
-    if len(closes) <= period:
-        return out
+def wilder_rsi(
+    closes: list[float],
+    period: int = RSI_PERIOD,
+) -> list[float | None]:
+    """以 Wilder 平滑法計算 RSI。"""
+    output: list[float | None] = [None] * len(closes)
 
-    gains = []
-    losses = []
-    for i in range(1, period + 1):
-        change = closes[i] - closes[i - 1]
+    if len(closes) <= period:
+        return output
+
+    gains: list[float] = []
+    losses: list[float] = []
+
+    for index in range(1, period + 1):
+        change = closes[index] - closes[index - 1]
         gains.append(max(change, 0.0))
         losses.append(max(-change, 0.0))
 
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
+    average_gain = sum(gains) / period
+    average_loss = sum(losses) / period
 
-    def calc(g: float, l: float) -> float:
-        if l == 0:
-            return 100.0 if g > 0 else 50.0
-        rs = g / l
-        return 100.0 - (100.0 / (1.0 + rs))
+    def calculate(gain: float, loss: float) -> float:
+        if loss == 0:
+            return 100.0 if gain > 0 else 50.0
+        relative_strength = gain / loss
+        return 100.0 - (100.0 / (1.0 + relative_strength))
 
-    out[period] = calc(avg_gain, avg_loss)
-    for i in range(period + 1, len(closes)):
-        change = closes[i] - closes[i - 1]
+    output[period] = calculate(average_gain, average_loss)
+
+    for index in range(period + 1, len(closes)):
+        change = closes[index] - closes[index - 1]
         gain = max(change, 0.0)
         loss = max(-change, 0.0)
-        avg_gain = ((avg_gain * (period - 1)) + gain) / period
-        avg_loss = ((avg_loss * (period - 1)) + loss) / period
-        out[i] = calc(avg_gain, avg_loss)
-    return out
+
+        average_gain = (
+            average_gain * (period - 1) + gain
+        ) / period
+        average_loss = (
+            average_loss * (period - 1) + loss
+        ) / period
+
+        output[index] = calculate(average_gain, average_loss)
+
+    return output
 
 
-def is_pivot_high(bars: list[dict], idx: int) -> bool:
-    center = bars[idx]["high"]
-    left = bars[idx - PIVOT_LEFT:idx]
-    right = bars[idx + 1:idx + PIVOT_RIGHT + 1]
+def is_pivot_high(bars: list[dict], index: int) -> bool:
+    center = bars[index]["high"]
+    left = bars[index - PIVOT_LEFT:index]
+    right = bars[index + 1:index + PIVOT_RIGHT + 1]
+
     return (
         len(left) == PIVOT_LEFT
         and len(right) == PIVOT_RIGHT
-        and all(center > b["high"] for b in left)
-        and all(center > b["high"] for b in right)
+        and all(center > bar["high"] for bar in left)
+        and all(center > bar["high"] for bar in right)
     )
 
 
-def is_pivot_low(bars: list[dict], idx: int) -> bool:
-    center = bars[idx]["low"]
-    left = bars[idx - PIVOT_LEFT:idx]
-    right = bars[idx + 1:idx + PIVOT_RIGHT + 1]
+def is_pivot_low(bars: list[dict], index: int) -> bool:
+    center = bars[index]["low"]
+    left = bars[index - PIVOT_LEFT:index]
+    right = bars[index + 1:index + PIVOT_RIGHT + 1]
+
     return (
         len(left) == PIVOT_LEFT
         and len(right) == PIVOT_RIGHT
-        and all(center < b["low"] for b in left)
-        and all(center < b["low"] for b in right)
+        and all(center < bar["low"] for bar in left)
+        and all(center < bar["low"] for bar in right)
     )
 
 
-def local_time(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(TAIPEI).strftime(
-        "%m-%d %H:%M"
-    )
+def to_taipei_time(timestamp_ms: int) -> str:
+    return datetime.fromtimestamp(
+        timestamp_ms / 1000,
+        tz=timezone.utc,
+    ).astimezone(TAIPEI).strftime("%m-%d %H:%M")
 
 
-def analyze_symbol(symbol: str, raw_bars: list[dict], now_ms: int | None = None) -> dict | None:
+def analyze_symbol(
+    symbol: str,
+    raw_bars: list[dict],
+    now_ms: int | None = None,
+) -> dict | None:
     """
-    只用已收盤 K 線。最後 186 根作型態回溯；
-    RSI 先用額外歷史 K 線暖機。三個最近確認高點與低點必須各自嚴格遞增。
+    V2.0 A級單一訊號條件：
+    1. 只分析最近 31 天的已收盤 4H K 線。
+    2. 最近三個確認 Swing High 價格逐次抬高。
+    3. 最近三個確認 Swing Low 價格逐次抬高。
+    4. 三個高點所在 K 線成交量逐次縮小。
+    5. 三個高點對應 RSI(14) 逐次下降。
+
+    不包含 B 級階段，不執行通知去重。
     """
+
     if now_ms is None:
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    # K線 time 是開盤時間；排除尚未完成的4H K線。
-    bars = [b for b in raw_bars if b["time"] + CANDLE_MS <= now_ms]
-    bars.sort(key=lambda x: x["time"])
-    if len(bars) < LOOKBACK_BARS + RSI_PERIOD + 2:
+    # 排除尚未收盤的 4H K 線。
+    closed_bars = [
+        bar for bar in raw_bars
+        if int(bar["time"]) + CANDLE_MS <= now_ms
+    ]
+    closed_bars.sort(key=lambda bar: int(bar["time"]))
+
+    if len(closed_bars) < RSI_PERIOD + PIVOT_LEFT + PIVOT_RIGHT + 3:
         return None
 
-    rsi_values = wilder_rsi([b["close"] for b in bars])
-    start_idx = max(0, len(bars) - LOOKBACK_BARS)
-    end_idx = len(bars) - 1
+    # 以目前時間往前 31 天定義觀察區間。
+    cutoff_ms = now_ms - LOOKBACK_MS
 
-    highs = []
-    lows = []
-    # 最後三根右側確認K棒必須已收盤，因此 pivot index 不會超過 end_idx - RIGHT。
-    for idx in range(max(start_idx + PIVOT_LEFT, PIVOT_LEFT), end_idx - PIVOT_RIGHT + 1):
-        if is_pivot_high(bars, idx) and rsi_values[idx] is not None:
+    # RSI 先使用較長的歷史序列計算，避免只用 31 天資料暖機。
+    closes = [float(bar["close"]) for bar in closed_bars]
+    rsi_values = wilder_rsi(closes, RSI_PERIOD)
+
+    # 只在最近 31 天內尋找波段點。
+    candidate_indices = [
+        index for index, bar in enumerate(closed_bars)
+        if int(bar["time"]) >= cutoff_ms
+    ]
+
+    if not candidate_indices:
+        return None
+
+    first_index = candidate_indices[0]
+    last_index = len(closed_bars) - 1
+
+    highs: list[dict] = []
+    lows: list[dict] = []
+
+    # 轉折點需有右側 3 根已收盤 K 線確認。
+    start_index = max(first_index, PIVOT_LEFT)
+    end_index = last_index - PIVOT_RIGHT
+
+    for index in range(start_index, end_index + 1):
+        bar = closed_bars[index]
+
+        if rsi_values[index] is None:
+            continue
+
+        if is_pivot_high(closed_bars, index):
             highs.append({
-                "index": idx,
-                "time": bars[idx]["time"],
-                "price": bars[idx]["high"],
-                "volume": bars[idx]["volume"],
-                "rsi": float(rsi_values[idx]),
+                "index": index,
+                "time": int(bar["time"]),
+                "price": float(bar["high"]),
+                "volume": float(bar["volume"]),
+                "rsi": float(rsi_values[index]),
             })
-        if is_pivot_low(bars, idx):
+
+        if is_pivot_low(closed_bars, index):
             lows.append({
-                "index": idx,
-                "time": bars[idx]["time"],
-                "price": bars[idx]["low"],
+                "index": index,
+                "time": int(bar["time"]),
+                "price": float(bar["low"]),
             })
 
     if len(highs) < 3 or len(lows) < 3:
         return None
 
-    h3 = highs[-3:]
-    l3 = lows[-3:]
+    # 取觀察區間內最近三個已確認高點與低點。
+    selected_highs = highs[-3:]
+    selected_lows = lows[-3:]
 
-    # 高點：價格嚴格墊高、成交量嚴格遞減、RSI 嚴格遞減。
-    if not (h3[0]["price"] < h3[1]["price"] < h3[2]["price"]):
-        return None
-    if not (h3[0]["volume"] > h3[1]["volume"] > h3[2]["volume"]):
-        return None
-    if not (h3[0]["rsi"] > h3[1]["rsi"] > h3[2]["rsi"]):
+    # 條件 1：三個高點持續抬高。
+    high_prices = [point["price"] for point in selected_highs]
+    if not (high_prices[0] < high_prices[1] < high_prices[2]):
         return None
 
-    # 低點嚴格墊高。
-    if not (l3[0]["price"] < l3[1]["price"] < l3[2]["price"]):
+    # 條件 2：三個低點持續抬高。
+    low_prices = [point["price"] for point in selected_lows]
+    if not (low_prices[0] < low_prices[1] < low_prices[2]):
         return None
 
-    last = bars[-1]
-    # 額外結構風險過濾：最新收盤不能跌破最近一個確認波段低點。
-    if last["close"] < l3[-1]["price"]:
+    # 條件 3：三個高點對應 K 線成交量持續縮小。
+    volumes = [point["volume"] for point in selected_highs]
+    if not (volumes[0] > volumes[1] > volumes[2]):
         return None
 
+    # 條件 4：三個高點對應 RSI(14) 持續下降。
+    rsi_at_highs = [point["rsi"] for point in selected_highs]
+    if not (
+        rsi_at_highs[0] > rsi_at_highs[1] > rsi_at_highs[2]
+    ):
+        return None
+
+    latest_bar = closed_bars[-1]
     latest_rsi = rsi_values[-1]
+
     if latest_rsi is None:
         return None
 
-    highs_out = [
+    highs_output = [
         {
-            "price": p["price"],
-            "volume": p["volume"],
-            "rsi": p["rsi"],
-            "time_local": local_time(p["time"]),
-            "time": p["time"],
+            "price": point["price"],
+            "volume": point["volume"],
+            "rsi": point["rsi"],
+            "time_local": to_taipei_time(point["time"]),
+            "time": point["time"],
         }
-        for p in h3
-    ]
-    lows_out = [
-        {
-            "price": p["price"],
-            "time_local": local_time(p["time"]),
-            "time": p["time"],
-        }
-        for p in l3
+        for point in selected_highs
     ]
 
-    signal_key = f"H{h3[-1]['time']}-L{l3[-1]['time']}"
+    lows_output = [
+        {
+            "price": point["price"],
+            "time_local": to_taipei_time(point["time"]),
+            "time": point["time"],
+        }
+        for point in selected_lows
+    ]
+
     return {
         "symbol": symbol,
-        "highs": highs_out,
-        "lows": lows_out,
-        "last_close": last["close"],
+        "highs": highs_output,
+        "lows": lows_output,
+        "last_close": float(latest_bar["close"]),
         "last_rsi": float(latest_rsi),
-        "signal_key": signal_key,
     }
