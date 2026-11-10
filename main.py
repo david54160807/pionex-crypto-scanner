@@ -31,7 +31,6 @@ def format_signal(item: dict) -> str:
         "",
         "【三個波段高點】",
     ]
-
     for idx, point in enumerate(item["highs"], 1):
         lines.append(
             f"H{idx} {fmt_price(point['price'])}"
@@ -41,12 +40,8 @@ def format_signal(item: dict) -> str:
         )
 
     lines.extend(["", "【三個波段低點】"])
-
     for idx, point in enumerate(item["lows"], 1):
-        lines.append(
-            f"L{idx} {fmt_price(point['price'])}"
-            f"｜{point['time_local']}"
-        )
+        lines.append(f"L{idx} {fmt_price(point['price'])}｜{point['time_local']}")
 
     lines.extend([
         "",
@@ -62,13 +57,21 @@ def format_signal(item: dict) -> str:
 def main() -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
     if not token or not chat_id:
         log.error("缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID GitHub Secrets")
         return 2
 
     client = PionexClient()
     bot = TelegramBot(token, chat_id)
+
+    # 每次 workflow 執行時輪詢 Telegram 的 TEST 指令。
+    # GitHub Actions 每 30 分鐘執行，因此不是即時 webhook 回覆。
+    try:
+        test_count = bot.handle_test_commands()
+        if test_count:
+            log.info("本輪處理 %d 個 Telegram TEST 指令", test_count)
+    except Exception:
+        log.exception("讀取或回覆 Telegram TEST 指令失敗")
 
     try:
         symbols = client.get_trading_perpetual_symbols()
@@ -81,28 +84,23 @@ def main() -> int:
         return 1
 
     log.info("開始掃描 %d 個 USDT 永續合約", len(symbols))
-
     now_ms = int(time.time() * 1000)
     found: list[dict] = []
     errors = 0
     scanned = 0
 
-    # 單線程逐一請求，沿用先前已驗證的限流保護。
     for symbol in symbols:
         try:
             klines = client.get_4h_klines(symbol)
             scanned += 1
-
             result = analyze_symbol(symbol, klines, now_ms=now_ms)
             if result is not None:
                 found.append(result)
-
             if scanned % 25 == 0:
                 log.info(
                     "掃描進度：%d/%d，符合策略：%d",
                     scanned, len(symbols), len(found)
                 )
-
         except RateLimitError:
             log.exception("Pionex 持續 HTTP 429，停止本輪掃描")
             return 1
@@ -111,16 +109,14 @@ def main() -> int:
             log.warning("%s 掃描失敗：%s", symbol, exc)
 
     found.sort(key=lambda item: item["symbol"])
-
     log.info(
         "掃描完成：市場 %d、成功取得K線 %d、符合 %d、錯誤 %d",
         len(symbols), scanned, len(found), errors
     )
 
-    # V2.0：完全不做去重。每次掃描符合條件的幣種都重新通知。
+    # 不做去重：每輪掃描符合條件的幣種都重新通知。
     sent_count = 0
     send_errors = 0
-
     for item in found:
         try:
             bot.send_message(format_signal(item))
@@ -135,17 +131,16 @@ def main() -> int:
         log.info("本輪沒有符合策略的幣種")
 
     if os.getenv("SEND_SCAN_SUMMARY", "false").lower() == "true":
-        summary = (
-            "🔎 Pionex 4H 全市場掃描完成\n"
-            f"掃描合約：{len(symbols)}\n"
-            f"成功取得K線：{scanned}\n"
-            f"符合策略：{len(found)}\n"
-            f"通知成功：{sent_count}\n"
-            f"通知失敗：{send_errors}\n"
-            f"掃描錯誤：{errors}"
-        )
         try:
-            bot.send_message(summary)
+            bot.send_message(
+                "🔎 Pionex 4H 全市場掃描完成\n"
+                f"掃描合約：{len(symbols)}\n"
+                f"成功取得K線：{scanned}\n"
+                f"符合策略：{len(found)}\n"
+                f"通知成功：{sent_count}\n"
+                f"通知失敗：{send_errors}\n"
+                f"掃描錯誤：{errors}"
+            )
         except Exception:
             send_errors += 1
             log.exception("Telegram 掃描統計通知失敗")
@@ -154,7 +149,6 @@ def main() -> int:
         "本輪結束：符合 %d 個，通知成功 %d 個，通知失敗 %d 個",
         len(found), sent_count, send_errors
     )
-
     return 1 if send_errors else 0
 
 
