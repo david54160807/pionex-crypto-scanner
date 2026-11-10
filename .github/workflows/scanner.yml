@@ -1,5 +1,4 @@
-
-name: Pionex 4H Crypto Scanner
+name: Pionex 4H Crypto Scanner V2.0
 
 on:
   schedule:
@@ -7,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: pionex-crypto-scanner
@@ -17,11 +16,10 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,16 +35,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SEND_SCAN_SUMMARY: "false"
+          LOG_LEVEL: "INFO"
         run: python main.py
-
-      - name: Save notification state
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update scanner notification state"
-            git push
-          else
-            echo "No state changes."
-          fi
