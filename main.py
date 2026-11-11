@@ -101,8 +101,14 @@ def main() -> int:
     client = PionexClient()
     bot = TelegramBot(token, chat_id)
 
-    # Telegram TEST 指令已改由 Cloudflare Worker Webhook 即時處理。
-# 停用 GitHub Actions 的 getUpdates 輪詢，避免與 Telegram Webhook 衝突。
+    # 每次 workflow 執行時輪詢 Telegram 的 TEST 指令。
+    # GitHub Actions 每 30 分鐘執行，因此不是即時 webhook 回覆。
+    try:
+        test_count = bot.handle_test_commands()
+        if test_count:
+            log.info("本輪處理 %d 個 Telegram TEST 指令", test_count)
+    except Exception:
+        log.exception("讀取或回覆 Telegram TEST 指令失敗")
 
     try:
         symbols = client.get_trading_perpetual_symbols()
