@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import base64
 from html import escape
 import os
 import sys
@@ -147,6 +149,121 @@ def log_github_run_diagnostics() -> dict:
         log.warning("讀取 GitHub Queue Time 失敗（不影響掃描）：%s", exc)
     return info
 
+
+SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "20"))
+STATE_FILE = "state.json"
+
+
+def _github_headers(token: str) -> dict:
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def load_scan_state() -> dict:
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def should_run_full_scan(state: dict, event_name: str) -> tuple[bool, str]:
+    """Manual dispatch forces a scan; scheduled runs scan only when due."""
+    if event_name == "workflow_dispatch":
+        return True, "手動啟動，強制執行完整掃描"
+
+    last_text = state.get("last_successful_scan_utc")
+    if not last_text:
+        return True, "尚無完整成功紀錄，執行首次掃描"
+
+    try:
+        last_dt = datetime.fromisoformat(str(last_text).replace("Z", "+00:00"))
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=ZoneInfo("UTC"))
+    except (TypeError, ValueError):
+        return True, "成功紀錄格式異常，執行完整掃描"
+
+    now_dt = datetime.now(ZoneInfo("UTC"))
+    elapsed = (now_dt - last_dt).total_seconds()
+    threshold = SCAN_INTERVAL_MINUTES * 60
+    if elapsed >= threshold:
+        return True, f"距離上次完整成功掃描 {elapsed / 60:.1f} 分鐘，啟動補掃"
+    return False, f"距離上次完整成功掃描僅 {elapsed / 60:.1f} 分鐘，未達 {SCAN_INTERVAL_MINUTES} 分鐘，略過"
+
+
+def persist_success_state(token: str, repository: str, branch: str, run_id: str) -> bool:
+    """Persist the last fully successful scan in state.json via GitHub Contents API."""
+    if not (token and repository and branch):
+        log.error("缺少 GitHub token/repository/branch，無法保存成功掃描時間。")
+        return False
+
+    import requests
+    api_url = f"https://api.github.com/repos/{repository}/contents/{STATE_FILE}"
+    headers = _github_headers(token)
+    try:
+        response = requests.get(
+            api_url, headers=headers, params={"ref": branch}, timeout=15
+        )
+        existing = {}
+        sha = None
+        if response.status_code == 200:
+            payload = response.json()
+            sha = payload.get("sha")
+            try:
+                raw = base64.b64decode(payload.get("content", "")).decode("utf-8")
+                existing = json.loads(raw) if raw.strip() else {}
+            except Exception:
+                existing = {}
+        elif response.status_code != 404:
+            response.raise_for_status()
+
+        if not isinstance(existing, dict):
+            existing = {}
+        existing["last_successful_scan_utc"] = datetime.now(
+            ZoneInfo("UTC")
+        ).isoformat(timespec="seconds")
+        existing["last_successful_run_id"] = str(run_id or "")
+        existing["last_successful_branch"] = branch
+        content = json.dumps(existing, ensure_ascii=False, indent=2) + "\n"
+        encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        body = {
+            "message": f"chore(scanner): record successful scan {run_id or 'manual'}",
+            "content": encoded,
+            "branch": branch,
+        }
+        if sha:
+            body["sha"] = sha
+
+        saved = requests.put(api_url, headers=headers, json=body, timeout=20)
+        saved.raise_for_status()
+        with open(STATE_FILE, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        log.info(
+            "已保存完整成功掃描時間：%s",
+            existing["last_successful_scan_utc"]
+        )
+        return True
+    except Exception as exc:
+        log.exception("保存完整成功掃描時間失敗：%s", exc)
+        return False
+
+
+def send_overdue_alert(bot: "TelegramBot", elapsed_minutes: float) -> None:
+    """Notify when a scheduled run starts and the last full scan is overdue."""
+    try:
+        bot.send_message(
+            "⚠️ <b>PIONEX SCANNER 排程異常提醒</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"距離上次完整成功掃描已超過 30 分鐘（目前約 {elapsed_minutes:.1f} 分鐘）。\n"
+            "系統已啟動補掃；若持續發生，請檢查 GitHub Actions 排程與執行紀錄。"
+        )
+    except Exception:
+        log.exception("發送排程異常提醒失敗")
+
 def main() -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -158,14 +275,38 @@ def main() -> int:
     client = PionexClient()
     bot = TelegramBot(token, chat_id)
 
-    # 每次 workflow 執行時輪詢 Telegram 的 TEST 指令。
-    # GitHub Actions 每 30 分鐘執行，因此不是即時 webhook 回覆。
+    event_name = os.getenv("GITHUB_EVENT_NAME", "local")
+    state = load_scan_state()
+    last_text = state.get("last_successful_scan_utc")
+    overdue_minutes = None
+    if last_text:
+        try:
+            last_dt = datetime.fromisoformat(str(last_text).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=ZoneInfo("UTC"))
+            overdue_minutes = max(
+                0.0,
+                (datetime.now(ZoneInfo("UTC")) - last_dt).total_seconds() / 60,
+            )
+        except (TypeError, ValueError):
+            pass
+
+    # 每次 5 分鐘檢查都輪詢 Telegram TEST 指令，即使本輪不需要完整掃描。
     try:
         test_count = bot.handle_test_commands()
         if test_count:
             log.info("本輪處理 %d 個 Telegram TEST 指令", test_count)
     except Exception:
         log.exception("讀取或回覆 Telegram TEST 指令失敗")
+
+    should_scan, scan_reason = should_run_full_scan(state, event_name)
+    log.info("排程判斷：%s", scan_reason)
+    if not should_scan:
+        log.info("本輪為輕量檢查，不執行市場掃描。")
+        return 0
+
+    if overdue_minutes is not None and overdue_minutes > 30:
+        send_overdue_alert(bot, overdue_minutes)
 
     try:
         symbols = client.get_trading_perpetual_symbols()
@@ -210,7 +351,23 @@ def main() -> int:
         len(symbols), scanned, len(found), errors, scan_elapsed
     )
 
-    # 不做去重：每輪掃描符合條件的幣種都重新通知。
+    # 只有所有市場合約均成功取得 K 線、且沒有掃描錯誤，才更新成功時間。
+    full_scan_success = scanned == len(symbols) and errors == 0
+    state_saved = False
+    if full_scan_success:
+        state_saved = persist_success_state(
+            os.getenv("GITHUB_TOKEN", "").strip(),
+            os.getenv("GITHUB_REPOSITORY", "").strip(),
+            os.getenv("GITHUB_REF_NAME", "main").strip() or "main",
+            os.getenv("GITHUB_RUN_ID", ""),
+        )
+    else:
+        log.warning(
+            "本輪不是完整成功掃描（成功 %d/%d、錯誤 %d），不更新成功時間；下輪將重試。",
+            scanned, len(symbols), errors
+        )
+
+    # 不做去重：每輪符合條件的幣種都重新通知。
     sent_count = 0
     send_errors = 0
     for item in found:
@@ -246,6 +403,11 @@ def main() -> int:
         "本輪結束：符合 %d 個，通知成功 %d 個，通知失敗 %d 個",
         len(found), sent_count, send_errors
     )
+    if not full_scan_success:
+        return 1
+    if not state_saved:
+        log.error("掃描本身完整，但成功時間未能保存；下一輪可能再次執行補掃。")
+        return 1
     return 1 if send_errors else 0
 
 

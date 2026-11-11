@@ -59,3 +59,6 @@ GitHub Actions 使用 UTC 排程 `7,27,47 * * * *`，台灣時間（UTC+8）對�
 - ⚙️ 版本 2.0
 
 TEST 虛擬訊號沿用相同版面，並額外標示虛擬測試提醒。掃描完成統計報告維持原有格式；本次不更動策略、API、排程及 TEST 輪詢方式。
+
+
+For V2.2 schedule, state persistence, and deployment instructions, see README_繁體中文.md.

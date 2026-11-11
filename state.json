@@ -1,3 +1,5 @@
 {
-  "sent": {}
+  "sent": {},
+  "last_successful_scan_utc": null,
+  "last_successful_run_id": null
 }
