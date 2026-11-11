@@ -25,40 +25,32 @@ def fmt_price(value: float) -> str:
 
 
 def format_signal(item: dict) -> str:
-    symbol = escape(item["symbol"].replace("_", "/"))
+    """正式訊號：依使用者指定的固定版面輸出，不增加其他欄位。"""
+    symbol = escape(item["symbol"].replace("_", " / ").replace("/", " / "))
+    # 正規化常見的 BTC_USDT / BTC/USDT，避免斜線重複。
+    symbol = " / ".join(part.strip() for part in symbol.split("/"))
     lines = [
-        "🟢 <b>PIONEX CRYPTO SCANNER</b>",
-        "<code>4H TRADING SIGNAL · USDT PERPETUAL</code>",
+        "🤖派網加密貨幣掃描器",
         "━━━━━━━━━━━━━━━━━━",
-        f"🚀 <b>{symbol}</b>",
-        "<b>策略狀態</b>　<code>ALL CONDITIONS PASSED</code>",
+        f"⭐️ <b>{symbol}</b>",
         "",
-        "📈 <b>SWING HIGH｜三個波段高點</b>",
+        "🟢 策略判斷：全部條件符合",
+        "",
+        "📈 波段高點",
     ]
     for idx, point in enumerate(item["highs"], 1):
         lines.append(
-            f"<b>H{idx}</b>　<code>{fmt_price(point['price'])}</code>\n"
-            f"　　成交量 <code>{point['volume']:,.4f}</code>"
-            f"　｜ RSI <code>{point['rsi']:.2f}</code>\n"
-            f"　　<i>{point['time_local']}（台灣）</i>"
+            f"🔺 H{idx}｜{fmt_price(point['price'])}｜"
+            f"量 {point['volume']:,.2f}｜RSI {point['rsi']:.2f}"
         )
 
-    lines.extend(["", "📉 <b>SWING LOW｜三個波段低點</b>"])
+    lines.extend(["", "📉 波段低點"])
     for idx, point in enumerate(item["lows"], 1):
-        lines.append(
-            f"<b>L{idx}</b>　<code>{fmt_price(point['price'])}</code>"
-            f"　｜ <i>{point['time_local']}（台灣）</i>"
-        )
+        lines.append(f"🔻 L{idx}｜{fmt_price(point['price'])}")
 
     lines.extend([
         "━━━━━━━━━━━━━━━━━━",
-        "📍 <b>最新市場數據</b>",
-        f"最新已收盤價　<code>{fmt_price(item['last_close'])}</code>",
-        f"最新 RSI(14)　 <code>{item['last_rsi']:.2f}</code>",
-        f"🕒 掃描時間　<i>{datetime.now(TAIPEI).strftime('%Y-%m-%d %H:%M:%S')} 台灣時間</i>",
-        "",
-        "⚠️ <i>此為技術型態篩選通知，不構成買賣建議。</i>",
-        "<code>PIONEX SCANNER · V2.0</code>",
+        "⚙️ 版本 2.0",
     ])
     return "\n".join(lines)
 

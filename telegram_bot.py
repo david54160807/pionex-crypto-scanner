@@ -53,51 +53,33 @@ class TelegramBot:
 
     @staticmethod
     def _format_test_signal() -> str:
-        """建立純展示用的虛擬訊號；不讀取行情、不參與正式掃描。"""
-        now = datetime.now(ZoneInfo("Asia/Taipei"))
-        stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        """建立純展示用的虛擬訊號，版面完全比照正式訊號。"""
         highs = [
-            ("98,500", "1,245.6800", "72.40", "2026-11-10 06:00"),
-            ("100,200", "1,018.3500", "68.20", "2026-11-10 18:00"),
-            ("102,800", "862.9100", "63.10", "2026-11-11 02:00"),
+            (98500.0, 1245.68, 72.40),
+            (100200.0, 1018.35, 68.20),
+            (102800.0, 862.91, 63.10),
         ]
-        lows = [
-            ("91,200", "2026-11-09 06:00"),
-            ("93,100", "2026-11-09 18:00"),
-            ("95,400", "2026-11-10 10:00"),
-        ]
+        lows = [91200.0, 93100.0, 95400.0]
         lines = [
-            "🟢 <b>PIONEX CRYPTO SCANNER</b>",
-            "<code>4H TRADING SIGNAL · USDT PERPETUAL</code>",
+            "🤖派網加密貨幣掃描器",
             "━━━━━━━━━━━━━━━━━━",
-            "🧪 <b>BTC / USDT</b>",
-            "<b>策略狀態</b>　<code>ALL CONDITIONS PASSED</code>",
-            "<b>通知類型</b>　<code>SIMULATED TEST SIGNAL</code>",
+            "⭐️ <b>BTC / USDT</b>",
             "",
-            "📈 <b>SWING HIGH｜三個波段高點</b>",
+            "🟢 策略判斷：全部條件符合",
+            "",
+            "📈 波段高點",
         ]
-        for idx, (price, volume, rsi, point_time) in enumerate(highs, 1):
+        for idx, (price, volume, rsi) in enumerate(highs, 1):
             lines.append(
-                f"<b>H{idx}</b>　<code>{price}</code>\n"
-                f"　　成交量 <code>{volume}</code>　｜ RSI <code>{rsi}</code>\n"
-                f"　　<i>{point_time}（台灣）</i>"
+                f"🔺 H{idx}｜{price:,.0f}｜量 {volume:,.2f}｜RSI {rsi:.2f}"
             )
-        lines.extend(["", "📉 <b>SWING LOW｜三個波段低點</b>"])
-        for idx, (price, point_time) in enumerate(lows, 1):
-            lines.append(
-                f"<b>L{idx}</b>　<code>{price}</code>　｜ "
-                f"<i>{point_time}（台灣）</i>"
-            )
+        lines.extend(["", "📉 波段低點"])
+        for idx, price in enumerate(lows, 1):
+            lines.append(f"🔻 L{idx}｜{price:,.0f}")
         lines.extend([
             "━━━━━━━━━━━━━━━━━━",
-            "📍 <b>最新市場數據（虛擬）</b>",
-            "最新已收盤價　<code>99,600</code>",
-            "最新 RSI(14)　 <code>59.80</code>",
-            f"🕒 測試時間　<i>{stamp} 台灣時間</i>",
-            "",
-            "⚠️ <b>此為虛擬測試訊號</b>",
-            "<i>數據純屬示範，非即時行情、非真實交易訊號，不會觸發下單。</i>",
-            "<code>PIONEX SCANNER · V2.0</code>",
+            "⚙️ 版本 2.0",
+            "⚠️ 此為虛擬測試訊號，非即時行情或真實交易訊號。",
         ])
         return "\n".join(lines)
 
