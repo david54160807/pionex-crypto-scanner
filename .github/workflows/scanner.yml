@@ -1,14 +1,17 @@
-
-name: Pionex 4H Crypto Scanner V2.0
+name: Pionex 4H Crypto Scanner V2.1
 
 on:
   schedule:
+    # 台灣時間每小時 07、27、47 分執行（UTC 同分鐘）
     - cron: "7,27,47 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
+# 保留單一掃描工作，避免同一時間重複呼叫 Pionex API。
+# GitHub concurrency 的等待工作可能被較新的工作取代，因此仍需觀察 Queue Time。
 concurrency:
   group: pionex-crypto-scanner
   cancel-in-progress: false
@@ -20,21 +23,28 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
       - name: Run market scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_RUN_STARTED_AT: ${{ github.run_started_at }}
           SEND_SCAN_SUMMARY: "true"
           LOG_LEVEL: "INFO"
         run: python main.py
