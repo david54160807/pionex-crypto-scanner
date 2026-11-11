@@ -50,7 +50,7 @@ def format_signal(item: dict) -> str:
 
     lines.extend([
         "━━━━━━━━━━━━━━━━━━",
-        "⚙️ 版本 2.0",
+        "⚙️ 版本 2.1",
     ])
     return "\n".join(lines)
 
@@ -87,9 +87,65 @@ def format_scan_summary(
         f"└ 通知狀態　{notify_status}",
         "━━━━━━━━━━━━━━━━━━",
         "<i>本工具僅進行型態篩選與訊息通知，不會自動下單。</i>",
-        "<code>PIONEX SCANNER · V2.0</code>",
+        "<code>PIONEX SCANNER · V2.1</code>",
     ])
 
+
+
+def log_github_run_diagnostics() -> dict:
+    """記錄 GitHub Actions 觸發方式與排隊時間；診斷失敗不影響掃描。"""
+    import requests
+    from datetime import timezone
+
+    info = {
+        "event": os.getenv("GITHUB_EVENT_NAME", "local"),
+        "run_id": os.getenv("GITHUB_RUN_ID", ""),
+        "run_number": os.getenv("GITHUB_RUN_NUMBER", ""),
+        "run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", ""),
+        "queue_seconds": None,
+    }
+    log.info(
+        "GitHub 執行資訊：event=%s run_id=%s run_number=%s attempt=%s",
+        info["event"], info["run_id"], info["run_number"], info["run_attempt"]
+    )
+
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    repository = os.getenv("GITHUB_REPOSITORY", "").strip()
+    run_id = info["run_id"]
+    if not (token and repository and run_id):
+        log.info("未提供 GitHub Actions 診斷憑證，略過 Queue Time 查詢。")
+        return info
+
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{repository}/actions/runs/{run_id}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        run = response.json()
+        created = run.get("created_at")
+        started = run.get("run_started_at")
+        if created and started:
+            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            queue_seconds = max(0, int((started_dt - created_dt).total_seconds()))
+            info["queue_seconds"] = queue_seconds
+            log.info(
+                "GitHub Queue Time：%d 秒；建立時間=%s；開始時間=%s；狀態=%s",
+                queue_seconds, created, started, run.get("status")
+            )
+            if queue_seconds >= 300:
+                log.warning("GitHub 工作排隊超過 5 分鐘，可能是 Runner 或平台負載延遲。")
+        else:
+            log.warning("GitHub API 未提供完整 created_at/run_started_at，無法計算 Queue Time。")
+    except Exception as exc:
+        log.warning("讀取 GitHub Queue Time 失敗（不影響掃描）：%s", exc)
+    return info
 
 def main() -> int:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -98,6 +154,7 @@ def main() -> int:
         log.error("缺少 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID GitHub Secrets")
         return 2
 
+    run_info = log_github_run_diagnostics()
     client = PionexClient()
     bot = TelegramBot(token, chat_id)
 
@@ -120,6 +177,7 @@ def main() -> int:
         log.error("Pionex 回傳的可交易 USDT 永續合約清單為空")
         return 1
 
+    scan_started = time.monotonic()
     log.info("開始掃描 %d 個 USDT 永續合約", len(symbols))
     now_ms = int(time.time() * 1000)
     found: list[dict] = []
@@ -146,9 +204,10 @@ def main() -> int:
             log.warning("%s 掃描失敗：%s", symbol, exc)
 
     found.sort(key=lambda item: item["symbol"])
+    scan_elapsed = time.monotonic() - scan_started
     log.info(
-        "掃描完成：市場 %d、成功取得K線 %d、符合 %d、錯誤 %d",
-        len(symbols), scanned, len(found), errors
+        "掃描完成：市場 %d、成功取得K線 %d、符合 %d、錯誤 %d、耗時 %.1f 秒",
+        len(symbols), scanned, len(found), errors, scan_elapsed
     )
 
     # 不做去重：每輪掃描符合條件的幣種都重新通知。

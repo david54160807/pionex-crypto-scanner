@@ -1,4 +1,4 @@
-# Pionex Crypto Scanner V2.0 — TEST 指令版
+# Pionex Crypto Scanner V2.1
 
 ## 策略條件
 - Pionex USDT 永續合約
@@ -10,52 +10,37 @@
 - Swing High / Low 前後各 3 根 K 線確認
 - 只使用已收盤 K 線
 
-## 通知規則
+## 自動排程
+- GitHub Actions Cron：`7,27,47 * * * *`（UTC）
+- 台灣時間：每小時 07、27、47 分執行。
+- GitHub Actions 排程可能受平台負載影響而延遲；Cron 不是準時執行保證。
+- 本版本會查詢 GitHub Actions Run API，記錄 Workflow 建立時間、開始時間與 Queue Time，協助分辨平台排隊延遲與程式掃描耗時。
+- 若 Queue Time 超過 5 分鐘，會在 Actions log 顯示警告。
+- 手動執行仍可透過 `workflow_dispatch` 使用。
+
+## 執行與 API
+- 保留逐一請求及每次請求至少間隔 1.15 秒，避免未經驗證地提高 Pionex API 請求頻率。
+- K 線下載、策略條件與訊號判斷不變。
+- 單次工作逾時上限 25 分鐘。
+- 保留 concurrency，避免同一時間多個掃描工作同時呼叫 API。
+- 更新 GitHub Actions checkout/setup-python 至支援較新 Node runtime 的版本。
+
+## Telegram 通知
+- Secrets 必須設定 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`。
+- 符合策略的幣種逐一發送訊號。
+- 每輪掃描完成後發送全市場統計。
+- `TEST` 指令由每輪 Actions 執行時輪詢，並非即時 webhook。
 - 不做訊號去重；每輪符合就重新通知。
-- 不設 B 級階段。
-- 不自動下單，只發送訊號。
+- 不自動下單。
 
-## Telegram TEST 指令
-在設定的 Telegram 對話傳送 `TEST`（大小寫不拘），程式會回傳一則測試通知。
-- 只有 `TELEGRAM_CHAT_ID` 設定的對話可以觸發。
-- 測試通知不是交易訊號，不會下單。
-- 目前由 GitHub Actions 每 30 分鐘執行時輪詢 Telegram，因此不是即時回覆，通常在下一輪 Workflow 執行時回覆。
-- 若 Bot 已設定 Telegram Webhook，`getUpdates` 輪詢可能無法使用，需先移除 Webhook。
+## GitHub 權限
+Repository → Settings → Actions → General：
+- Actions permissions：允許 Actions 執行。
+- Workflow permissions：Read and write 或 Read repository contents 均可；本版本額外在 workflow 層明確指定 `actions: read`、`contents: read`，用於讀取本次 Workflow Run 的排隊時間。
+- `GITHUB_TOKEN` 由 GitHub Actions 自動提供，不需要新增 Repository Secret。
 
-## GitHub Secrets
-設定：
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
+## 安裝更新
+將本 ZIP 內 `pionex-crypto-scanner-main` 資料夾中的所有檔案覆蓋至 Repository 的 `main` 分支，保留原有兩組 Telegram Secrets。確認 `.github/workflows/scanner.yml` 位於預設分支後，至 Actions 手動執行一次測試。
 
-## 更新
-將本專案所有檔案覆蓋至 GitHub Repository，保留上述兩個 Secrets，然後在 Actions 手動執行測試。
-
-## API 限流
-- 單線程逐一請求。
-- 每次請求至少間隔 1.15 秒。
-- HTTP 429 冷卻後重試一次；仍失敗則停止本輪。
-- 暫時性網路與 5xx 錯誤有限次重試。
-
-本程式為技術型態篩選工具，不構成投資建議。
-
-## 自動掃描排程
-GitHub Actions 使用 UTC 排程 `0,30 * * * *`，台灣時間（UTC+8）對應每小時整點及 30 分執行，例如 09:00、09:30、10:00、10:30。GitHub Actions 可能因系統負載而稍有延遲。
-
-## Telegram 通知版面（科技金融風格）
-- 掃描完成後會發送科技金融風格的全市場統計報告。
-- 符合策略的幣種會以獨立訊號卡片格式通知，保留三個 Swing High、三個 Swing Low、最新收盤價與 RSI。
-- TEST 測試訊息也採用相同的 HTML 視覺格式。
-- 使用 Telegram Bot API 支援的 HTML parse_mode，不會以圖片方式發送。
-- 本次只調整通知呈現與啟用掃描摘要通知，不更動策略判斷、API 節流、TEST 輪詢或排程。
-
-
-## Telegram 正式訊號版面
-正式訊號固定使用以下欄位與順序，不顯示波段時間、最新收盤價或最新 RSI：
-- 🤖派網加密貨幣掃描器
-- ⭐️ 幣種名稱
-- 🟢 策略判斷：全部條件符合
-- 📈 波段高點：價格、成交量、RSI
-- 📉 波段低點：價格
-- ⚙️ 版本 2.0
-
-TEST 虛擬訊號沿用相同版面，並額外標示虛擬測試提醒。掃描完成統計報告維持原有格式；本次不更動策略、API、排程及 TEST 輪詢方式。
+## 重要限制
+Queue Time 診斷能指出 GitHub Workflow 從建立到開始的等待時間，但無法強制 GitHub 在 Cron 指定分鐘準時啟動。若 GitHub 平台本身延遲，仍需考慮外部排程器或常駐 VPS。

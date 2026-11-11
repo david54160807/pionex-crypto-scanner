@@ -78,7 +78,7 @@ class TelegramBot:
             lines.append(f"🔻 L{idx}｜{price:,.0f}")
         lines.extend([
             "━━━━━━━━━━━━━━━━━━",
-            "⚙️ 版本 2.0",
+            "⚙️ 版本 2.1",
             "⚠️ 此為虛擬測試訊號，非即時行情或真實交易訊號。",
         ])
         return "\n".join(lines)

@@ -1,4 +1,4 @@
-# Pionex Crypto Scanner V2.0 — TEST 指令版
+# Pionex Crypto Scanner V2.1 — TEST 指令版
 
 ## 策略條件
 - Pionex USDT 永續合約
